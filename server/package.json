@@ -1,0 +1,1 @@
+{"description":"LimooCast relay: lossless PCM audio from one phone to any browser listener. Zero npm dependencies, Node stdlib only.","engines":{"node":">=20"},"main":"server.js","name":"limoocast","scripts":{"start":"node server.js","test":"node test/relay.test.mjs"},"version":"1.0.0"}

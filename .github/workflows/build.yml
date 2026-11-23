@@ -1,0 +1,49 @@
+# LimooCast — sender APK build (debug) + relay test
+#
+# Build gate for the Android sender app. No Go, no NDK: plain Kotlin +
+# Android SDK. A green run uploads the debug APK as an artifact.
+name: Build LimooCast
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v3
+
+      - name: Assemble debug APK
+        working-directory: android
+        run: gradle assembleDebug --stacktrace
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: limoocast-debug
+          path: android/app/build/outputs/apk/debug/app-debug.apk
+
+  relay-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Relay test (bit-for-bit PCM forwarding)
+        working-directory: server
+        run: npm test

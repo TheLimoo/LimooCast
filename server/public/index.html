@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>LimooCast — listen</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; background: #0d0f12; color: #f2f2f2; font-family: system-ui, -apple-system, sans-serif; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 20px; }
+  .card { width: 100%; max-width: 420px; background: #171a1f; border: 1px solid #2a2e35; border-radius: 20px; padding: 28px 24px; text-align: center; }
+  h1 { margin: 0 0 4px; font-size: 26px; }
+  .sub { color: #9aa0aa; font-size: 14px; margin: 0 0 20px; }
+  .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; background: #555; margin-right: 6px; vertical-align: 1px; }
+  .dot.live { background: #22c55e; box-shadow: 0 0 10px #22c55e; }
+  #status { font-size: 15px; margin-bottom: 18px; }
+  #play { width: 100%; padding: 16px; font-size: 18px; font-weight: 700; border: 0; border-radius: 14px; background: #f97316; color: #fff; cursor: pointer; }
+  #play:disabled { background: #444; color: #999; cursor: default; }
+  #stop { width: 100%; padding: 12px; margin-top: 10px; font-size: 15px; border: 1px solid #333; border-radius: 12px; background: transparent; color: #ccc; cursor: pointer; }
+  .meter { height: 8px; background: #26292f; border-radius: 4px; margin: 20px 0 8px; overflow: hidden; }
+  #level { height: 100%; width: 0%; background: linear-gradient(90deg, #22c55e, #facc15, #ef4444); transition: width 80ms linear; }
+  .stats { color: #9aa0aa; font-size: 13px; line-height: 1.7; }
+  .stats b { color: #e5e7eb; font-weight: 600; }
+  input[type=range] { width: 100%; margin: 14px 0 4px; accent-color: #f97316; }
+  .row { display: flex; gap: 8px; margin-top: 16px; }
+  .row input { flex: 1; min-width: 0; padding: 10px 12px; border-radius: 10px; border: 1px solid #333; background: #0d0f12; color: #fff; font-size: 15px; }
+  .row button { padding: 10px 14px; border-radius: 10px; border: 0; background: #26292f; color: #fff; font-size: 15px; cursor: pointer; }
+  .hint { color: #777; font-size: 12px; margin-top: 18px; line-height: 1.6; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>🍋 LimooCast</h1>
+  <p class="sub">Listening to your main phone — lossless, live</p>
+  <div id="status"><span class="dot" id="dot"></span><span id="statusText">Not connected</span></div>
+  <button id="play">▶&nbsp; Start listening</button>
+  <button id="stop" hidden>Stop</button>
+  <div class="meter"><div id="level"></div></div>
+  <input type="range" id="vol" min="0" max="100" value="90" aria-label="Volume">
+  <div class="stats">
+    Room <b id="room">—</b> · <b id="listeners">0</b> listener(s)<br>
+    <span id="detail">Tap Start listening, then play music on the main phone.</span><br>
+    <span id="bytes">0 MB received</span> · <span id="lat">— ms buffer</span>
+  </div>
+  <div class="row">
+    <input id="roomInput" placeholder="room code" autocomplete="off">
+    <button id="joinBtn">Join</button>
+  </div>
+  <p class="hint">Keep this page open. Sound starts when the main phone streams —<br>it plays whatever is playing there: Spotify, YouTube Music, anything.<br>If you hear silence while Spotify plays, Spotify is blocking capture on the main phone (see the sender app).</p>
+</div>
+<script>
+(function () {
+  const $ = (id) => document.getElementById(id);
+  const params = new URLSearchParams(location.search);
+  let room = (params.get('room') || '').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 32) || 'limoo';
+  $('room').textContent = room;
+  $('roomInput').value = room;
+
+  let ws = null, actx = null, node = null, gain = null;
+  let started = false, bytes = 0, frames = 0, lastLevel = 0, jitterMs = 120;
+  let levelTimer = null;
+
+  function setStatus(text, live) {
+    $('statusText').textContent = text;
+    $('dot').className = 'dot' + (live ? ' live' : '');
+  }
+  function wsUrl() {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return proto + '//' + location.host + '/ws?room=' + encodeURIComponent(room) + '&role=listener';
+  }
+  function updateStats() {
+    $('bytes').textContent = (bytes / 1048576).toFixed(2) + ' MB received';
+    $('lat').textContent = jitterMs + ' ms buffer';
+  }
+  function showLevel(v) { $('level').style.width = Math.min(100, v * 100).toFixed(0) + '%'; }
+
+  $('vol').addEventListener('input', () => { if (gain) gain.gain.value = $('vol').value / 100; });
+
+  $('joinBtn').addEventListener('click', () => {
+    const v = $('roomInput').value.replace(/[^A-Za-z0-9_-]/g, '').slice(0, 32);
+    if (!v) return;
+    room = v; $('room').textContent = room;
+    history.replaceState(null, '', '?room=' + encodeURIComponent(room));
+    if (started) connect();
+  });
+
+  $('play').addEventListener('click', async () => {
+    if (started) return;
+    $('play').disabled = true;
+    try {
+      actx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000, latencyHint: 'interactive' });
+      await actx.resume();
+      await actx.audioWorklet.addModule('worklet.js');
+      node = new AudioWorkletNode(actx, 'cast-player', { outputChannelCount: [2] });
+      gain = actx.createGain();
+      gain.gain.value = $('vol').value / 100;
+      node.connect(gain).connect(actx.destination);
+      started = true;
+      $('play').hidden = true;
+      $('stop').hidden = false;
+      setStatus('Connected — waiting for audio…', false);
+      connect();
+      levelTimer = setInterval(() => { showLevel(lastLevel); lastLevel *= 0.7; updateStats(); }, 100);
+    } catch (e) {
+      $('play').disabled = false;
+      setStatus('Audio failed: ' + e.message, false);
+    }
+  });
+
+  $('stop').addEventListener('click', () => {
+    if (ws) { try { ws.close(); } catch {} ws = null; }
+    if (actx) { actx.close().catch(() => {}); actx = null; }
+    clearInterval(levelTimer);
+    started = false;
+    $('play').hidden = false; $('play').disabled = false; $('stop').hidden = true;
+    setStatus('Stopped', false);
+    $('detail').textContent = 'Tap Start listening to join again.';
+  });
+
+  function connect() {
+    if (ws) { try { ws.close(); } catch {} }
+    ws = new WebSocket(wsUrl());
+    ws.binaryType = 'arraybuffer';
+    ws.onopen = () => setStatus('Connected — waiting for audio…', false);
+    ws.onclose = () => { if (started) { setStatus('Disconnected — retrying…', false); setTimeout(() => { if (started) connect(); }, 2000); } };
+    ws.onerror = () => { if (started) setStatus('Connection error — retrying…', false); };
+    ws.onmessage = (ev) => {
+      if (typeof ev.data === 'string') {
+        try {
+          const m = JSON.parse(ev.data);
+          if (m.type === 'room') {
+            $('listeners').textContent = m.listeners;
+            if (m.sender) { setStatus('● Live — playing from main phone', true); $('detail').textContent = 'Lossless 48 kHz stereo · no quality loss.'; }
+            else { setStatus('Connected — main phone is not streaming yet', false); $('detail').textContent = 'Start sharing on the main phone.'; }
+          }
+        } catch {}
+        return;
+      }
+      // Binary PCM16 stereo frame. Pre-buffer ~120 ms before the worklet
+      // drains it, so Wi‑Fi jitter does not cause gaps.
+      const pcm = new Int16Array(ev.data);
+      bytes += ev.data.byteLength; frames++;
+      let peak = 0;
+      for (let i = 0; i < pcm.length; i += 64) { const a = Math.abs(pcm[i]) / 32768; if (a > peak) peak = a; }
+      lastLevel = Math.max(lastLevel, peak);
+      if (!node) return;
+      if (frames < 6) { // build the initial jitter buffer
+        setTimeout(() => node.port.postMessage(pcm), jitterMs);
+      } else {
+        node.port.postMessage(pcm);
+      }
+    };
+  }
+})();
+</script>
+</body>
+</html>
