@@ -50,6 +50,24 @@ phone. If both phones are near each other, use local mode instead:
   phone and tap Start listening. Same controls, same lossless quality.
 - No Wi-Fi? Turn on the main phone's hotspot and connect the other phone
   to it — local mode works over the hotspot too.
+- **If the link stays empty:** the phone couldn't find its own Wi-Fi IP
+  (v1.1.0 only asked WifiManager once). v1.1.1 detects it four ways and
+  re-checks continuously, and if it still can't, type the IP from
+  Settings → Wi-Fi → your network into the "Wi-Fi IP" field — that always
+  works. Copy Link never copies the "no link yet" message anymore.
+
+**Zero-data proof:** local mode makes no connection to the Sweden relay
+at all — the code path never creates the internet client, the local
+server only accepts connections on your Wi-Fi, and the listener page
+loads no external resources (no CDN, fonts or trackers). Proof test:
+turn on airplane mode, turn Wi-Fi back on, local mode still plays.
+The app's stats line reads "0 MB internet" while local streaming runs.
+
+**Install note (v1.1.1):** v1.0.0/v1.1.0 were signed with throwaway keys
+generated fresh on each CI runner, so Android refuses to install v1.1.1
+over them. Uninstall LimooCast once, then install v1.1.1 — from now on
+every build is signed with one stable key committed to the repo, so
+future updates install over the old version normally.
 
 Local mode needs both phones on the same network. When they're apart,
 switch it off and internet mode (Sweden relay) takes over.

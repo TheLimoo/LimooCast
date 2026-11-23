@@ -89,6 +89,16 @@
         android:textColor="#F2F2F2"
         android:textSize="15sp" />
 
+    <EditText
+        android:id="@+id/localIpInput"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:hint="Wi-Fi IP, e.g. 192.168.1.5 — only if the link above stays empty"
+        android:inputType="text"
+        android:textColor="#FFFFFF"
+        android:textSize="14sp" />
+
     <Button
         android:id="@+id/startBtn"
         android:layout_width="match_parent"

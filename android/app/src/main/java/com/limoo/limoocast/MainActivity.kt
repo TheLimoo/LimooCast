@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionManager
+import android.net.ConnectivityManager
 import android.net.Uri
 import android.net.wifi.WifiManager
 import android.os.Build
@@ -44,6 +45,7 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var serverInput: EditText
     private lateinit var roomInput: EditText
+    private lateinit var localIpInput: EditText
     private lateinit var localSwitch: Switch
     private lateinit var startBtn: Button
     private lateinit var stopBtn: Button
@@ -81,6 +83,7 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
         serverInput = findViewById(R.id.serverInput)
         roomInput = findViewById(R.id.roomInput)
+        localIpInput = findViewById(R.id.localIpInput)
         localSwitch = findViewById(R.id.localSwitch)
         startBtn = findViewById(R.id.startBtn)
         stopBtn = findViewById(R.id.stopBtn)
@@ -95,6 +98,11 @@ class MainActivity : AppCompatActivity() {
             prefs.edit().putString("room", it).apply()
         })
         localSwitch.isChecked = prefs.getBoolean("localMode", false)
+        localIpInput.setText(prefs.getString("localIpOverride", ""))
+        localIpInput.setOnFocusChangeListener { _, _ ->
+            prefs.edit().putString("localIpOverride", localIpInput.text.toString().trim()).apply()
+            updateLink()
+        }
         localSwitch.setOnCheckedChangeListener { _, _ ->
             prefs.edit().putBoolean("localMode", localSwitch.isChecked).apply()
             serverInput.isEnabled = !localSwitch.isChecked
@@ -108,8 +116,11 @@ class MainActivity : AppCompatActivity() {
         serverInput.setOnFocusChangeListener { _, _ -> updateLink() }
         roomInput.setOnFocusChangeListener { _, _ -> updateLink() }
         copyBtn.setOnClickListener {
-            updateLink()
-            val link = linkText.text.toString()
+            val link = currentListenerLink()
+            if (link == null) {
+                Toast.makeText(this, "No link yet — connect this phone to Wi-Fi (or its hotspot), or type its Wi-Fi IP below", Toast.LENGTH_LONG).show()
+                return@setOnClickListener
+            }
             val cm = getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
             cm.setPrimaryClip(android.content.ClipData.newPlainText("LimooCast link", link))
             Toast.makeText(this, "Listener link copied — open it on the other phone", Toast.LENGTH_LONG).show()
@@ -133,8 +144,15 @@ class MainActivity : AppCompatActivity() {
             startBtn.isEnabled = !running
             stopBtn.isEnabled = running
             levelBar.progress = (CastStats.level * 100).roundToInt()
+            // Re-resolve the local link continuously: joining Wi-Fi (or the
+            // hotspot starting) after opening the app must produce a link
+            // without reopening it. Cheap — linkText only.
+            if (localSwitch.isChecked) updateLink()
             val mb = CastStats.bytesSent / 1048576.0
-            statsText.text = if (running) {
+            statsText.text = if (running && localSwitch.isChecked) {
+                "Local · ${"%.2f".format(mb)} MB over Wi-Fi (0 MB internet) · ${CastStats.listeners} listener(s)\n" +
+                    "Chunks: ${CastStats.totalChunks} · silent: ${CastStats.silentChunks}"
+            } else if (running) {
                 "Streaming · ${"%.2f".format(mb)} MB sent · ${CastStats.listeners} listener(s)\n" +
                     "Chunks: ${CastStats.totalChunks} · silent: ${CastStats.silentChunks}"
             } else if (CastStats.error != null) {
@@ -164,23 +182,54 @@ class MainActivity : AppCompatActivity() {
         prefs.edit()
             .putString("server", serverInput.text.toString().trim())
             .putString("room", roomInput.text.toString().trim())
+            .putString("localIpOverride", localIpInput.text.toString().trim())
+            .putBoolean("localMode", localSwitch.isChecked)
             .apply()
     }
 
-    private fun updateLink() {
-        if (!::localSwitch.isInitialized || localSwitch.isChecked) {
-            val ip = localIp()
-            linkText.text = if (ip != null) "http://$ip:${CaptureService.LOCAL_PORT}/" else "Local mode: connect both phones to the same Wi-Fi (or turn on this phone's hotspot) — no link yet"
-            return
+    /**
+     * The listener link, or null when local mode has no usable IP yet.
+     * Never returns the "no link yet" message — callers must not copy that.
+     */
+    private fun currentListenerLink(): String? {
+        if (localSwitch.isChecked) {
+            val ip = localIp() ?: return null
+            return "http://$ip:${CaptureService.LOCAL_PORT}/"
         }
         val server = serverInput.text.toString().trim().trimEnd('/')
         val room = roomInput.text.toString().trim()
         val base = if (server.startsWith("http")) server else "https://$server"
-        linkText.text = "$base/?room=" + URLEncoder.encode(room, "UTF-8")
+        return "$base/?room=" + URLEncoder.encode(room, "UTF-8")
     }
 
-    /** This phone's Wi-Fi / hotspot IPv4 address, or null if not on Wi-Fi. */
+    private fun updateLink() {
+        val link = if (::localSwitch.isInitialized) currentListenerLink() else null
+        linkText.text = link ?: "Local mode: connect both phones to the same Wi-Fi (or turn on this phone's hotspot) — no link yet"
+    }
+
+    /**
+     * This phone's Wi-Fi / hotspot IPv4 address, or null if none is found.
+     *
+     * v1.1.0 only tried WifiManager (which returns 0.0.0.0 on newer Android
+     * without location permission) and interface enumeration — and it only
+     * ran once when the screen opened, so joining Wi-Fi afterwards never
+     * produced a link. v1.1.1 tries four sources, in order:
+     *  1. manual IP typed below (always wins — the guaranteed fallback),
+     *  2. ConnectivityManager LinkProperties of the active network,
+     *  3. WifiManager connection info,
+     *  4. scanning network interfaces (covers hotspot ap0 + wlan0).
+     */
     private fun localIp(): String? {
+        val override = localIpInput.text.toString().trim()
+        if (override.matches(Regex("\\d{1,3}(\\.\\d{1,3}){3}"))) return override
+        try {
+            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val props = cm.getLinkProperties(cm.activeNetwork)
+            for (addr in props?.linkAddresses ?: emptyList()) {
+                val a = addr.address
+                if (a is Inet4Address && a.isSiteLocalAddress) return a.hostAddress
+            }
+        } catch (_: Exception) {}
         try {
             @Suppress("DEPRECATION")
             val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
