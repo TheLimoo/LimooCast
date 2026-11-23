@@ -36,6 +36,24 @@ chunks are all zero. Test with YouTube Music first; if Spotify is silent
 on your phone, the fallback is a Spotify-direct mode (listener plays the
 same track from Spotify, main phone controls it) — not built in v1.
 
+## Local mode — zero internet data (v1.1.0)
+
+Internet mode streams lossless PCM at ~1.5 Mbit/s, which is **~690 MB
+per hour** — uploaded by the sender phone and downloaded by the listener
+phone. If both phones are near each other, use local mode instead:
+
+- In the sender app, turn on **Local mode — same Wi-Fi, no internet data**.
+- The sender phone runs the listener server itself on port 8899 and
+  serves the exact same listener page. It uses **zero internet data** —
+  audio never leaves your local network.
+- Open the link it shows (e.g. `http://192.168.1.5:8899/`) on the other
+  phone and tap Start listening. Same controls, same lossless quality.
+- No Wi-Fi? Turn on the main phone's hotspot and connect the other phone
+  to it — local mode works over the hotspot too.
+
+Local mode needs both phones on the same network. When they're apart,
+switch it off and internet mode (Sweden relay) takes over.
+
 ## Deploy the relay (Sweden, via AetherDeploy)
 
 The relay is a plain Node app (`package.json` → `node server.js`,

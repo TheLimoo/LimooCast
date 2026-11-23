@@ -40,6 +40,10 @@ class CaptureService : Service() {
         const val ACTION_STOP = "com.limoo.limoocast.STOP"
         const val EXTRA_SERVER = "server"
         const val EXTRA_ROOM = "room"
+        const val EXTRA_MODE = "mode"
+        const val MODE_INTERNET = "internet"
+        const val MODE_LOCAL = "local"
+        const val LOCAL_PORT = 8899
         const val CHANNEL_ID = "limoocast"
         const val NOTIF_ID = 1
         const val SAMPLE_RATE = 48000
@@ -52,6 +56,7 @@ class CaptureService : Service() {
     @Volatile private var stopRequested = false
     private var mediaProjection: MediaProjection? = null
     private var ws: WsClient? = null
+    private var localServer: LocalServer? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -66,8 +71,10 @@ class CaptureService : Service() {
             ACTION_START -> {
                 val server = intent.getStringExtra(EXTRA_SERVER).orEmpty()
                 val room = intent.getStringExtra(EXTRA_ROOM).orEmpty()
-                startForeground(NOTIF_ID, notification("LimooCast — streaming to $room"))
-                startCapture(server, room)
+                val mode = intent.getStringExtra(EXTRA_MODE) ?: MODE_INTERNET
+                val where = if (mode == MODE_LOCAL) "local Wi-Fi (port $LOCAL_PORT, no internet)" else "relay $server, room $room"
+                startForeground(NOTIF_ID, notification("LimooCast — streaming via $where"))
+                startCapture(server, room, mode)
                 return START_STICKY
             }
         }
@@ -98,7 +105,7 @@ class CaptureService : Service() {
         return "$ws/ws?room=$room&role=sender"
     }
 
-    private fun startCapture(server: String, room: String) {
+    private fun startCapture(server: String, room: String, mode: String) {
         if (captureThread?.isAlive == true) return
         CastStats.error = null
         CastStats.bytesSent = 0
@@ -140,16 +147,27 @@ class CaptureService : Service() {
                     throw IllegalStateException("AudioRecord failed to initialise")
                 }
 
-                val client = WsClient(wsUrl(server, room), onText = { text ->
-                    // {"type":"room","sender":true,"listeners":1}
-                    val m = Regex("\"listeners\"\\s*:\\s*(\\d+)").find(text)
-                    if (m != null) CastStats.listeners = m.groupValues[1].toInt()
-                }, onClosed = {
-                    CastStats.connected = false
-                })
-                ws = client
-                client.connect()
-                CastStats.connected = true
+                val client = if (mode == MODE_LOCAL) {
+                    // Local mode: this phone serves the listener page itself.
+                    // No WebSocket client — frames go straight to local browsers.
+                    val ls = LocalServer(applicationContext, LOCAL_PORT)
+                    ls.start()
+                    localServer = ls
+                    CastStats.connected = true
+                    null
+                } else {
+                    val c = WsClient(wsUrl(server, room), onText = { text ->
+                        // {"type":"room","sender":true,"listeners":1}
+                        val m = Regex("\"listeners\"\\s*:\\s*(\\d+)").find(text)
+                        if (m != null) CastStats.listeners = m.groupValues[1].toInt()
+                    }, onClosed = {
+                        CastStats.connected = false
+                    })
+                    ws = c
+                    c.connect()
+                    CastStats.connected = true
+                    c
+                }
 
                 record.startRecording()
                 CastStats.running = true
@@ -171,8 +189,14 @@ class CaptureService : Service() {
                     }
                     CastStats.level = peak / 32768f
                     if (allZero) CastStats.silentChunks++
+                    if (mode == MODE_LOCAL) {
+                        localServer?.broadcast(buf, n)
+                        CastStats.listeners = localServer?.listenerCount ?: 0
+                        CastStats.bytesSent += n
+                        continue
+                    }
                     try {
-                        client.sendBinary(buf, 0, n)
+                        client?.sendBinary(buf, 0, n)
                         CastStats.bytesSent += n
                     } catch (e: Exception) {
                         CastStats.error = "send failed: ${e.message}"
@@ -186,6 +210,8 @@ class CaptureService : Service() {
                 try { record?.release() } catch (_: Exception) {}
                 try { ws?.close() } catch (_: Exception) {}
                 ws = null
+                try { localServer?.stop() } catch (_: Exception) {}
+                localServer = null
                 try { mediaProjection?.stop() } catch (_: Exception) {}
                 mediaProjection = null
                 CastStats.running = false

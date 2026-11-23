@@ -80,6 +80,15 @@
         android:inputType="text"
         android:textColor="#FFFFFF" />
 
+    <Switch
+        android:id="@+id/localSwitch"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:text="Local mode — same Wi-Fi, no internet data"
+        android:textColor="#F2F2F2"
+        android:textSize="15sp" />
+
     <Button
         android:id="@+id/startBtn"
         android:layout_width="match_parent"
@@ -123,7 +132,7 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="16dp"
-        android:text="Note: if the meter stays flat while Spotify plays, Spotify is blocking capture on this phone. YouTube Music and local players usually work."
+        android:text="Note: internet mode uses ~690 MB/hour (lossless PCM). Local mode uses no internet data at all — both phones on the same Wi-Fi, or the other phone on this phone's hotspot. If the meter stays flat while Spotify plays, Spotify is blocking capture on this phone. YouTube Music and local players usually work."
         android:textColor="#777777"
         android:textSize="12sp" />
 </LinearLayout>
