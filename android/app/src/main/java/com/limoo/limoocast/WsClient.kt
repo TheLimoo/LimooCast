@@ -51,18 +51,11 @@ class WsClient(
         // Read the 101 response headers (byte-by-byte until \r\n\r\n).
         val inp = BufferedInputStream(raw.getInputStream())
         val header = StringBuilder()
-        var prev = 0
         while (true) {
             val b = inp.read()
             if (b == -1) throw IllegalStateException("server closed during handshake")
             header.append(b.toChar())
-            if (prev == '\r' && b == '\n'.code) {
-                // crude end check: look for blank line
-                if (header.endsWith("\r\n\r\n")) break
-            }
-            // track \r\n\r\n via last 4 chars instead
             if (header.length >= 4 && header.substring(header.length - 4) == "\r\n\r\n") break
-            prev = b
             if (header.length > 8192) throw IllegalStateException("handshake headers too large")
         }
         if (!header.contains("101")) throw IllegalStateException("WS handshake failed: ${header.lines().firstOrNull()}")
