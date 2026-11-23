@@ -58,6 +58,12 @@
   let ws = null, actx = null, node = null, gain = null;
   let started = false, bytes = 0, frames = 0, lastLevel = 0, jitterMs = 120;
   let levelTimer = null;
+  // Fallback player (no AudioWorklet): scheduled AudioBufferSourceNode
+  // chunks. Used on the local http://192.168.x.x page, where the browser
+  // is not a secure context, so actx.audioWorklet is undefined and
+  // addModule throws "Cannot read properties of undefined (reading
+  // 'addModule')". Slightly more delay than the worklet, same quality.
+  let fallbackQueue = [], fallbackNextTime = 0, fallbackTimer = null;
 
   function setStatus(text, live) {
     $('statusText').textContent = text;
@@ -83,17 +89,55 @@
     if (started) connect();
   });
 
+  function scheduleFallback() {
+    if (!actx || !gain) return;
+    if (fallbackNextTime < actx.currentTime + 0.05) fallbackNextTime = actx.currentTime + 0.1;
+    while (fallbackQueue.length && fallbackNextTime < actx.currentTime + 0.35) {
+      const pcm = fallbackQueue.shift();
+      const frames = pcm.length / 2;
+      const buf = actx.createBuffer(2, frames, 48000);
+      const l = buf.getChannelData(0), r = buf.getChannelData(1);
+      for (let i = 0; i < frames; i++) { l[i] = pcm[i * 2] / 32768; r[i] = pcm[i * 2 + 1] / 32768; }
+      const src = actx.createBufferSource();
+      src.buffer = buf;
+      src.connect(gain);
+      src.start(fallbackNextTime);
+      fallbackNextTime += frames / 48000;
+    }
+  }
+  function startFallbackAudio() {
+    gain = actx.createGain();
+    gain.gain.value = $('vol').value / 100;
+    gain.connect(actx.destination);
+    fallbackQueue = [];
+    fallbackNextTime = actx.currentTime + 0.1;
+    fallbackTimer = setInterval(scheduleFallback, 50);
+    jitterMs = 300;
+    $('detail').textContent = 'Compatibility audio (local page) — same quality, a bit more delay.';
+  }
+  async function startWorkletAudio() {
+    await actx.audioWorklet.addModule('worklet.js');
+    node = new AudioWorkletNode(actx, 'cast-player', { outputChannelCount: [2] });
+    gain = actx.createGain();
+    gain.gain.value = $('vol').value / 100;
+    node.connect(gain).connect(actx.destination);
+  }
+
   $('play').addEventListener('click', async () => {
     if (started) return;
     $('play').disabled = true;
     try {
       actx = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 48000, latencyHint: 'interactive' });
       await actx.resume();
-      await actx.audioWorklet.addModule('worklet.js');
-      node = new AudioWorkletNode(actx, 'cast-player', { outputChannelCount: [2] });
-      gain = actx.createGain();
-      gain.gain.value = $('vol').value / 100;
-      node.connect(gain).connect(actx.destination);
+      try {
+        if (!actx.audioWorklet) throw new Error('no AudioWorklet here');
+        await startWorkletAudio();
+      } catch (werr) {
+        // Local http:// LAN page: not a secure context, no worklet.
+        // Fall back to scheduled audio chunks instead of failing.
+        node = null;
+        startFallbackAudio();
+      }
       started = true;
       $('play').hidden = true;
       $('stop').hidden = false;
@@ -110,6 +154,7 @@
     if (ws) { try { ws.close(); } catch {} ws = null; }
     if (actx) { actx.close().catch(() => {}); actx = null; }
     clearInterval(levelTimer);
+    clearInterval(fallbackTimer); fallbackTimer = null; fallbackQueue = []; node = null;
     started = false;
     $('play').hidden = false; $('play').disabled = false; $('stop').hidden = true;
     setStatus('Stopped', false);
@@ -142,11 +187,16 @@
       let peak = 0;
       for (let i = 0; i < pcm.length; i += 64) { const a = Math.abs(pcm[i]) / 32768; if (a > peak) peak = a; }
       lastLevel = Math.max(lastLevel, peak);
-      if (!node) return;
-      if (frames < 6) { // build the initial jitter buffer
-        setTimeout(() => node.port.postMessage(pcm), jitterMs);
-      } else {
-        node.port.postMessage(pcm);
+      if (node) {
+        if (frames < 6) { // build the initial jitter buffer
+          setTimeout(() => node.port.postMessage(pcm), jitterMs);
+        } else {
+          node.port.postMessage(pcm);
+        }
+      } else if (fallbackTimer) {
+        // Compatibility path: queue chunks for scheduled playback.
+        if (fallbackQueue.length > 50) fallbackQueue.shift(); // drop oldest, avoid runaway lag
+        fallbackQueue.push(pcm);
       }
     };
   }
